@@ -39,6 +39,17 @@ void ramp_3colors(in float x,in float position1,in vec3 color1,
         result = mix(color2, color3, t);
     }
 }
+void DirToSDFAngle(in vec3 face_dir,in vec3 sun_dir,out float angle)
+{
+    face_dir = normalize(face_dir*vec3(1,1,0));
+    sun_dir = normalize(sun_dir*vec3(1,1,0));
+    float face_angle = atan(face_dir.y, face_dir.x);
+    float sun_angle = atan(sun_dir.y, sun_dir.x);
+    sun_angle = mod(sun_angle-PI/2.0, 2.0*PI);
+    face_angle = mod(face_angle+PI/2.0, 2.0*PI)-PI;
+    angle= sun_angle-face_angle;
+}
+
 /*  META
     @UV: label=UV; default=UV[0];
     @smoothness: subtype=Slider;default=0.02;min=0.0;max=1.0;
@@ -104,7 +115,7 @@ vec4 my_hsv_edit(vec4 color, float mask,float hue, float saturation, float value
     return vec4(hsv_to_rgb(hsv), color.a);
 }
 
-
+//*颜色转整数 作为ID用
 /* META
     @x: default=0;
 */
@@ -118,7 +129,6 @@ vec3 packIntToVec3(int x) {
     return v / 255.0;  // 归一化到 [0,1]
 }
 
-
 /* META
     @v: default=(0.0, 0.0,0.0,0.0);
 */
@@ -130,14 +140,7 @@ int unpackVec3ToInt(vec3 v) {
     return int(value);
 }
 
-/* META
-    @Position: subtype=Vector; default=(0,0,0,0);
-    @Projection: subtype=Matrix; default=PROJECTION;
-    @depth: default=0.0;
-    @normalizedDepth: default=0.0;
-    @isBackground: default=false;
-    @isForeground: default=ture;
-*/
+//*位置转深度
 /*  META
     @Position      : subtype=Vector; default=(0,0,0,0);
     @Projection    : subtype=Matrix; default=PROJECTION;
@@ -146,7 +149,7 @@ int unpackVec3ToInt(vec3 v) {
     @isBackground  : default=false;
     @isForeground  : default=true;
 */
-void PositionToDepthsProj(
+void PositionToDepths(
     in  vec4 Position,           // 世界空间位置（w==0 表示背景）
     in  mat4 Projection,         // 相机投影矩阵
     out float depth,             // 相机空间线性深度（世界单位）
@@ -184,3 +187,174 @@ void PositionToDepthsProj(
     isBackground = false;
     isForeground = true;
 }
+
+
+float _samplePosToDepth(in sampler2D p, in vec2 uv)
+{
+    float temp_float;
+    bool temp_bool;
+    vec3 pos = texture(p, uv).xyz;
+    float depth;
+    PositionToDepths(vec4(pos, 1.0), PROJECTION, depth, temp_float, temp_bool, temp_bool);
+    return depth;
+}
+
+
+//* 屏幕空间曲率和边缘光 来自Goo引擎
+/*  META
+    @uv:default=screen_uv();
+*/
+void screen_rim(in sampler2D depth,
+                in sampler2D position,
+                in vec2 uv,
+                in int n_samples,
+                in float sample_scale,
+                in float clamp_dist,
+                out float curvature,
+                out float rim,
+                out vec4 pos,
+                out float depth_out)
+{
+    bool use_position= false;
+    HasImage(depth, use_position);
+    use_position=!use_position;
+    // 固定分辨率换成基于屏幕的 texel size
+    vec2 texel_size = vec2(1.0 / 1920.0, 1.0 / 1080.0);
+    // 当前像素深度
+    float mid_depth = use_position?(texture(position, uv).a!=0.0?_samplePosToDepth(position, uv):1000.0):texture(depth, uv).a;
+    pos= texture(position, uv);
+    depth_out = mid_depth;
+    float clamp_range = 0.001;
+    float i_samples = (64.0 / float(n_samples));
+
+    float accum = 0.0;
+    float rim_accum = 0.0;
+
+    // 随机旋转偏移，避免条纹伪影
+    float hash = fract(sin(dot(uv, vec2(12.9898,78.233))) * 43758.5453);
+
+    for (int r = 0; r < 8; r++)
+    {
+        float angle = (float(r) + hash) * 3.14159265 * 0.125; // 22.5°
+        vec2 offset = vec2(cos(angle), sin(angle)) * texel_size * sample_scale;
+
+        for (int i = 1; i <= n_samples; i++)
+        {
+            float left = use_position?(texture(position, uv + offset * i * i_samples).a!=0.0?_samplePosToDepth(position, uv + offset * i * i_samples):1000.0):texture(depth, uv + offset * i * i_samples).a;
+            float right =use_position?(texture(position, uv - offset * i * i_samples).a!=0.0?_samplePosToDepth(position, uv - offset * i * i_samples):1000.0):texture(depth, uv - offset * i * i_samples).a;
+
+            float curve = clamp(left - mid_depth, -clamp_range, clamp_range) +
+                          clamp(right - mid_depth, -clamp_range, clamp_range);
+
+            float afac = (1.0 - float(i - 1) / float(n_samples));
+
+            float ad = max(abs(max(left, mid_depth) - max(right, mid_depth)) - clamp_dist, 0.0);
+
+            accum += curve * afac * 0.001;
+            rim_accum += min(mid_depth - min(left, right), clamp_dist) * afac;
+        }
+    }
+
+    curvature = -accum / length(texel_size) * i_samples;
+    rim = rim_accum / sample_scale * clamp_range;
+}
+
+// *按编号选择灯光
+void Get_Light(in int light_index, out Light L)
+{
+    L = LIGHTS.lights[light_index];
+}
+
+#if defined(IS_MESH_SHADER) || defined(IS_SCREEN_SHADER)
+#ifdef IS_MESH_SHADER
+/*  META
+    @position: subtype=Vector; default=(0.0,0.0,0.0);
+    @color: default=(0.0,0.0,0.0);
+    @strength: default=0.0;
+    @type: default=0;
+    @direction: default=(0.0,0.0,0.0);
+    @spot_angle: default=0.0;
+    @spot_blend: default=0.0;
+    @light_groups: default=MATERIAL_LIGHT_GROUPS;
+*/
+#else
+/*  META
+    @position: subtype=Vector; default=(0.0,0.0,0.0);
+    @color: default=(0.0,0.0,0.0);
+    @strength: default=0.0;
+    @type: default=0;
+    @direction: default=(0.0,0.0,0.0);
+    @spot_angle: default=0.0;
+    @spot_blend: default=0.0;
+    @light_groups: default=ivec4(1,0,0,0);
+*/
+#endif
+void find_light(
+    in vec3 position,
+    in vec3 color,
+    in float Strength,
+    in int type,
+    in vec3 direction,
+    in float spot_angle,
+    in float spot_blend,
+    in ivec4 light_groups,
+    out bool found,          // 是否找到
+    out Light L              // 找到的灯光
+    // *灯光过滤函数，根据灯光属性进行过滤，返回找到的第一个满足条件的灯光
+)
+{
+    L.position     = vec3(0.0);
+    L.direction    = vec3(0.0, 0.0, -1.0);
+    L.color  = vec3(0.0);
+    L.type         = 0;
+    L.spot_angle   = 0.0;
+    L.spot_blend   = 0.0;
+    found = false;
+    spot_angle = radians(spot_angle);
+    spot_blend = radians(spot_blend);
+    for (int i = 0; i < LIGHTS.lights_count; i++)
+    {
+        Light L_temp = LIGHTS.lights[i];
+        // 灯光分组匹配
+        bool group_match = false;
+        for(int g = 0; g < 4; g++)
+        {
+            if(light_groups[g] == 0 || LIGHT_GROUP_INDEX(i) == light_groups[g])
+            {
+                group_match = true;
+                break;
+            }
+        }
+        if(!group_match) continue;
+        //判断条件
+        // 位置判断
+        if(length(position) > 0.0 && distance(L_temp.position, position) > 0.001) continue;
+
+        // 颜色判断
+        if(length(color) > 0.0 && distance(L_temp.color, color) > 0.001) continue;
+
+        float light_strength = max(max(L_temp.color.r, L_temp.color.g), L_temp.color.b);
+        // 强度判断
+        if(Strength != 0 && light_strength != Strength) continue;
+
+        // 类型判断
+        if(type != 0 && L_temp.type != type) continue;
+
+        // 方向判断
+        if(length(direction) > 0.0 && distance(L_temp.direction, direction) > 0.001) continue;
+
+        // 聚光角度判断
+        if(spot_angle > 0.0 && abs(L_temp.spot_angle - spot_angle) > 0.001) continue;
+
+        // 聚光混合判断
+        if(spot_blend > 0.0 && abs(L_temp.spot_blend - spot_blend) > 0.001) continue;
+
+        // 找到第一个满足条件的灯光
+        L = L_temp;
+        L.direction=-L.direction;
+        found = true;
+        break;
+    }
+    
+}
+    #endif
