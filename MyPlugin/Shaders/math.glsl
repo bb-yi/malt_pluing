@@ -210,6 +210,7 @@ void screen_rim(in sampler2D depth,
                 in int n_samples,
                 in float sample_scale,
                 in float clamp_dist,
+                in float mask,
                 out float curvature,
                 out float rim,
                 out float rim_inside,
@@ -251,9 +252,9 @@ void screen_rim(in sampler2D depth,
 
             float ad = max(abs(max(left, mid_depth) - max(right, mid_depth)) - clamp_dist, 0.0);
 
-            accum += curve * afac * 0.001;
-            rim_accum += max(min(mid_depth - min(left, right), clamp_dist), 0.0) * afac + max(min(max(left, right) - mid_depth, clamp_dist), 0.0) * afac;
-            rim_inside_accum += max(min(max(left, right) - mid_depth, clamp_dist), 0.0) * afac;
+            accum += curve * afac * 0.001*mask;
+            rim_accum += max(min(mid_depth - min(left, right), clamp_dist), 0.0) * afac*mask + max(min(max(left, right) - mid_depth, clamp_dist), 0.0) * afac*mask;
+            rim_inside_accum += max(min(max(left, right) - mid_depth, clamp_dist), 0.0) * afac*mask;
             // rim_accum += min(mid_depth - min(left, right), clamp_dist) * afac;
         }
     }
@@ -300,6 +301,7 @@ void find_light(
     in vec3 direction,
     in float spot_angle,
     in float spot_blend,
+    in float radius,
     in ivec4 light_groups,
     out bool found,          // 是否找到
     out Light L              // 找到的灯光
@@ -340,7 +342,7 @@ void find_light(
         // 强度判断
         if(Strength != 0 && light_strength != Strength) continue;
 
-        // 类型判断
+        // 类型判断 1:日光 2:点光 3:聚光
         if(type != 0 && L_temp.type != type) continue;
 
         // 方向判断
@@ -352,6 +354,9 @@ void find_light(
         // 聚光混合判断
         if(spot_blend > 0.0 && abs(L_temp.spot_blend - spot_blend) > 0.001) continue;
 
+        // 半径判断
+        
+        if(radius > 0.0 && distance(position, L_temp.position) > radius) continue;
         // 找到第一个满足条件的灯光
         L = L_temp;
         L.direction=-L.direction;
@@ -360,4 +365,16 @@ void find_light(
     }
     
 }
-    #endif
+#endif
+
+/* META
+    @a: default=(0.0,0.0,0.0);
+    @b: default=(0.0,0.0,0.0);
+    @tolerance: default=0.0;
+*/
+bool colorsEqual(vec3 a, vec3 b, float tolerance)
+{
+    // 颜色差值
+    float diff = length(a - b);
+    return diff <= tolerance;
+}
