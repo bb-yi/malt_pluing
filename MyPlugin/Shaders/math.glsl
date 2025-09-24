@@ -212,6 +212,7 @@ void screen_rim(in sampler2D depth,
                 in float clamp_dist,
                 out float curvature,
                 out float rim,
+                out float rim_inside,
                 out vec4 pos,
                 out float depth_out)
 {
@@ -229,7 +230,7 @@ void screen_rim(in sampler2D depth,
 
     float accum = 0.0;
     float rim_accum = 0.0;
-
+    float rim_inside_accum = 0.0;
     // 随机旋转偏移，避免条纹伪影
     float hash = fract(sin(dot(uv, vec2(12.9898,78.233))) * 43758.5453);
 
@@ -251,12 +252,14 @@ void screen_rim(in sampler2D depth,
             float ad = max(abs(max(left, mid_depth) - max(right, mid_depth)) - clamp_dist, 0.0);
 
             accum += curve * afac * 0.001;
-            rim_accum += min(mid_depth - min(left, right), clamp_dist) * afac;
+            rim_accum += max(min(mid_depth - min(left, right), clamp_dist), 0.0) * afac + max(min(max(left, right) - mid_depth, clamp_dist), 0.0) * afac;
+            rim_inside_accum += max(min(max(left, right) - mid_depth, clamp_dist), 0.0) * afac;
+            // rim_accum += min(mid_depth - min(left, right), clamp_dist) * afac;
         }
     }
-
     curvature = -accum / length(texel_size) * i_samples;
     rim = rim_accum / sample_scale * clamp_range;
+    rim_inside = rim_inside_accum / sample_scale * clamp_range;
 }
 
 // *按编号选择灯光
