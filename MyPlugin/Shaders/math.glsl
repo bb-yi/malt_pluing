@@ -8,6 +8,20 @@ void my_smoothstep( in float x,in float edge0, in float edge1, out float result)
     result = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
     result = result * result * (3.0 - 2.0 * result);
 }
+
+
+/* META
+    @x: subtype=Float;label=X;default=0.0;
+    @inMin: subtype=Float;label=Input Min;default=0.0;
+    @inMax: subtype=Float;label=Input Max;default=1.0;
+    @outMin: subtype=Float;label=Output Min;default=0.0;
+    @outMax: subtype=Float;label=Output Max;default=1.0;
+*/
+float float_remap(float x, float inMin, float inMax, float outMin, float outMax)
+{
+    return outMin + ( (x - inMin) / (inMax - inMin) ) * (outMax - outMin);
+}
+
 //三种颜色的渐变
 /*  META
     @position1: subtype=Slider;default=0.0;min=0.0;max=1.0;
@@ -377,4 +391,94 @@ bool colorsEqual(vec3 a, vec3 b, float tolerance)
     // 颜色差值
     float diff = length(a - b);
     return diff <= tolerance;
+}
+
+/* META
+    @dir: default=view_direction();
+    @scale: default=1.0;
+*/
+void toSphericalCoordinates(in vec3 dir,in float scale, out vec2 uv) 
+{
+    // 确保dir是单位向量
+    vec3 n = normalize(dir);
+    uv = normalize(vec2(dir.x,dir.y));
+    float theta = atan(n.z,sqrt(n.x * n.x + n.y * n.y));
+    theta = float_remap(theta,0.0,PI/2.0,1.0,0.0);
+    theta = clamp(theta,0.0,1.0);
+    uv *= theta*0.5*scale;
+    uv+=0.5;
+}
+
+vec3 rotateToAlignZ(vec3 pos, vec3 targetDir) {
+vec3 z = normalize(targetDir);
+vec3 up = vec3(0.0, 0.0, 1.0); // Fallback up vector
+
+// Compute new x-axis (cross product of up and z)
+vec3 x = normalize(cross(up, z));
+
+// Compute new y-axis (cross product of z and x)
+vec3 y = cross(z, x);
+
+// Construct rotation matrix
+mat3 rotation = mat3(x, y, z);
+
+// Apply rotation to position
+return rotation * pos;
+}
+
+vec2 applyParallax(vec3 viewDir, vec2 uv, float heightScale,float height) { 
+// Normalize view direction 
+vec3 viewDirNorm = normalize(viewDir);
+
+// Initial height and UV
+vec2 p = viewDirNorm.xy * (height * heightScale) / max(viewDirNorm.z, 0.001); // Avoid division by zero
+vec2 newUV = uv + p;
+
+// Clamp UV to prevent sampling outside texture
+newUV = clamp(newUV, 0.0, 1.0);
+return newUV;
+}
+
+/* META
+    @uv: default=UV[0];
+    @tangent: default=get_tangent(0);
+    @normal: default=NORMAL;
+    @view_dir: default=view_direction();
+    @height_scale: default=1.0;
+    @layers: default=10;min=1;
+    @invert: default=false;
+    @occlusion: default=false;
+    @uv_out: default=(0.0,0.0);
+*/
+void Steep_parallax(in sampler2D height_map,in vec2 uv,in vec3 tangent,in vec3 normal,in vec3 view_dir,in float height_scale,in int layers,in bool invert,in bool occlusion ,out vec2 uv_out)
+{
+    //陡峭视差
+    vec3 v = normalize(view_dir);
+    mat3 TBN = mat3(tangent, cross(normal, tangent), normal);
+    vec3 VTS = normalize(v*TBN);
+    vec2 offset = (VTS.xy / VTS.z * height_scale) / (layers * 10);
+    vec2 delta = offset;
+    vec2 newUV = uv;
+    float height0 = 0, height1 =invert? texture(height_map, newUV).r:1.0- texture(height_map, newUV).r;
+    while (height0 < height1)
+    {
+        newUV -= delta;
+        height0 += 1.0 / layers;
+        height1 =invert?texture(height_map, newUV).r:1.0-texture(height_map, newUV).r;
+    }
+    uv_out = newUV;
+    if(occlusion)
+    {
+    // 视差遮蔽映射
+    vec2 oldUV = newUV + delta;
+    float height1_re = invert?texture(height_map, oldUV).r:1.0-texture(height_map, oldUV).r;
+    float height0_re = height0 - 1.0 / layers;
+    
+    float heightAfter = height1 - height0;
+    float heightBefore = height1_re - height0_re;
+    
+    float weight = heightAfter / (heightAfter - heightBefore);
+    newUV = oldUV * weight + newUV * (1 - weight);
+    uv_out = newUV;
+    }
 }

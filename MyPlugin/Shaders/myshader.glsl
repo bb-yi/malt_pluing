@@ -144,7 +144,7 @@ void BokehWithDepth(
         uv_s = clamp(uv_s, vec2(0.0), vec2(1.0));
 
         vec3 col = texture(tex, uv_s).xyz;
-        vec3 bokeh = pow(col, vec3(4.0));
+        vec3 bokeh = pow(col, vec3(1.0));
 
         // 深度采样
         float depth_s = texture(depthTex, uv_s).r;
@@ -247,9 +247,10 @@ void fisheye(
 
 #ifdef IS_MESH_SHADER
 /*  META
+    @exclude_light_type: default=0;
     @normal: default=NORMAL;
 */
-vec3 pbr_custom(vec3 albedo, float metalness, float roughness,vec3 normal)
+vec3 pbr_custom(vec3 albedo, float metalness, float roughness,vec3 normal,int exclude_light_type)
 {
     vec3 result = vec3(0);
     for (int i = 0; i < LIGHTS.lights_count; i++)
@@ -258,9 +259,10 @@ vec3 pbr_custom(vec3 albedo, float metalness, float roughness,vec3 normal)
         if(!any(equal(MATERIAL_LIGHT_GROUPS, light_group))) continue;
         
         Light L = LIGHTS.lights[i];
+        if(L.type == exclude_light_type) continue;
         LitSurface LS = npr_lit_surface(POSITION, normal, ID.x, L, i, Settings.Receive_Shadow, Settings.Self_Shadow);
 
-	float NoL = LS.NoL;
+        float NoL = LS.NoL;
         NoL = max(MIN_DOT, NoL);
 
         float NoV = dot(LS.N, LS.V);
@@ -309,6 +311,47 @@ vec3 pbr_custom(vec3 albedo, float metalness, float roughness,vec3 normal)
         result += lit_color * LS.light_color * LS.shadow_multiply;
     }
 
+    return result;
+}
+
+#endif
+
+
+#ifdef IS_MESH_SHADER
+/*  META
+    @exclude_light_type: default=0;
+    @normal: default=NORMAL;
+*/
+vec3 light_color(vec3 normal,int exclude_light_type)
+{
+    bool shadow;
+    bool self_shadow;
+    ivec4 light_groups = ivec4(1,0,0,0);
+    _shadow_params(0, shadow, self_shadow);
+    vec3 result = vec3(0,0,0);
+    for (int i = 0; i < LIGHTS.lights_count; i++)
+    {
+        for(int group_index = 0; group_index < 4; group_index++)
+        {
+            if(LIGHT_GROUP_INDEX(i) != light_groups[group_index])
+            {
+                continue;
+            }
+            Light L = LIGHTS.lights[i];
+            if(exclude_light_type == L.type)
+            {
+                continue;
+            }
+            LitSurface LS = npr_lit_surface(POSITION, normal, ID.x, L, i, shadow, self_shadow);
+            if(LS.NoL < 0)
+            {
+                continue;
+            }
+            float lambert = LS.NoL;
+            vec3 diffuse = lambert*LS.light_color * LS.shadow_multiply;
+            result += diffuse;
+        }
+    }
     return result;
 }
 
